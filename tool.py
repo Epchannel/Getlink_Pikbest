@@ -10,6 +10,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from dotenv import load_dotenv
 import time
+import zipfile
+import base64
 
 # Tải biến môi trường từ file .env
 load_dotenv()
@@ -31,6 +33,10 @@ def load_cookies_from_env():
         logger.error("Không thể parse PIKBEST_COOKIES từ .env, định dạng JSON không hợp lệ")
         return {}
 
+# Lấy API key cho captcha solver từ .env
+CAPTCHA_API_KEY = os.getenv('CAPTCHA_API_KEY', '')
+
+# Khởi tạo cookies
 PIKBEST_COOKIES = load_cookies_from_env()
 
 # Tạo session và headers giống trình duyệt
@@ -43,21 +49,86 @@ headers = {
     "Referer": "https://www.pikbest.com/",
 }
 
-def get_real_download_link(file_id):
-    download_api_url = f"https://pikbest.com/?m=download&id={file_id}&flag=1"
-    logger.info(f"Đang truy cập URL download: {download_api_url}")
-
+def setup_chrome_with_extension():
+    """Thiết lập Chrome với extension giải captcha"""
     options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument(f"user-agent={headers['User-Agent']}")
+    
     # Thêm các options để tránh phát hiện automation
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
+    options.add_argument(f"user-agent={headers['User-Agent']}")
     
-    driver = webdriver.Chrome(options=options)
+    # Kiểm tra xem có cần chạy headless không
+    # Lưu ý: Một số extension không hoạt động trong chế độ headless
+    run_headless = os.getenv('RUN_HEADLESS', 'false').lower() == 'true'
+    if run_headless:
+        options.add_argument("--headless")
+        options.add_argument("--disable-gpu")
+    
+    # Thêm extension giải captcha nếu có
+    extension_path = os.getenv('CAPTCHA_EXTENSION_PATH', '')
+    if extension_path and os.path.exists(extension_path):
+        logger.info(f"Đang thêm extension từ: {extension_path}")
+        options.add_extension(extension_path)
+    else:
+        logger.warning("Không tìm thấy extension giải captcha")
+    
+    # Tạo thư mục profile nếu cần
+    chrome_profile = os.getenv('CHROME_PROFILE_PATH', '')
+    if chrome_profile:
+        os.makedirs(chrome_profile, exist_ok=True)
+        options.add_argument(f"user-data-dir={chrome_profile}")
+    
+    return webdriver.Chrome(options=options)
+
+def handle_captcha(driver):
+    """Xử lý captcha nếu xuất hiện"""
+    try:
+        # Kiểm tra xem captcha có xuất hiện không
+        captcha_frames = driver.find_elements(By.XPATH, "//iframe[contains(@src, 'captcha') or contains(@title, 'captcha')]")
+        if captcha_frames:
+            logger.info("Phát hiện captcha, đang cố gắng giải...")
+            
+            # Lưu screenshot để debug
+            driver.save_screenshot("captcha_detected.png")
+            
+            # Kiểm tra xem extension có hoạt động không
+            if CAPTCHA_API_KEY:
+                # Đợi extension giải captcha (thời gian tùy thuộc vào extension)
+                logger.info("Đang đợi extension giải captcha...")
+                time.sleep(15)  # Đợi extension giải captcha
+                
+                # Kiểm tra xem captcha đã được giải chưa
+                captcha_frames = driver.find_elements(By.XPATH, "//iframe[contains(@src, 'captcha') or contains(@title, 'captcha')]")
+                if not captcha_frames:
+                    logger.info("Captcha đã được giải thành công!")
+                    return True
+                else:
+                    logger.warning("Extension không thể giải captcha tự động")
+            
+            # Nếu extension không hoạt động, thông báo cho người dùng
+            print("\n⚠️ Phát hiện captcha! Vui lòng giải captcha thủ công.")
+            print("Đã lưu screenshot tại: captcha_detected.png")
+            
+            # Nếu không chạy headless, đợi người dùng giải captcha
+            if os.getenv('RUN_HEADLESS', 'false').lower() != 'true':
+                input("Nhấn Enter sau khi đã giải captcha...")
+                logger.info("Người dùng đã xác nhận giải captcha")
+                return True
+            else:
+                logger.error("Không thể giải captcha trong chế độ headless")
+                return False
+    except Exception as e:
+        logger.error(f"Lỗi khi xử lý captcha: {e}")
+    
+    return True  # Không có captcha hoặc đã xử lý xong
+
+def get_real_download_link(file_id):
+    download_api_url = f"https://pikbest.com/?m=download&id={file_id}&flag=1"
+    logger.info(f"Đang truy cập URL download: {download_api_url}")
+
+    driver = setup_chrome_with_extension()
 
     try:
         # Đặt kích thước cửa sổ trình duyệt
@@ -84,6 +155,11 @@ def get_real_download_link(file_id):
         
         # Đợi lâu hơn để trang load hoàn toàn và hiện nút "Click here"
         time.sleep(7)  # Đợi ít nhất 5 giây + thêm 2 giây để chắc chắn
+        
+        # Xử lý captcha nếu xuất hiện
+        if not handle_captcha(driver):
+            logger.error("Không thể xử lý captcha, đang hủy tải xuống")
+            return None
         
         # Lưu screenshot để debug
         screenshot_path = "debug_screenshot.png"
@@ -186,6 +262,11 @@ def get_real_download_link(file_id):
                 driver.execute_script("arguments[0].click();", click_here_button)
                 time.sleep(5)  # Đợi lâu hơn sau khi click
                 
+                # Xử lý captcha nếu xuất hiện sau khi click
+                if not handle_captcha(driver):
+                    logger.error("Không thể xử lý captcha sau khi click, đang hủy tải xuống")
+                    return None
+                
                 # Kiểm tra Ajax requests
                 ajax_requests = driver.execute_script("return window.ajaxRequests;")
                 if ajax_requests:
@@ -285,7 +366,7 @@ def get_real_download_link(file_id):
             logger.error(f"Lỗi khi tìm và click nút 'Click here': {e}")
         
         # Phương pháp 2: Tìm trong HTML và JavaScript
-        logger.info("Đang tìm link trong HTML và JavaScript...")
+        logger.info("Đang tìm trong HTML và JavaScript...")
         try:
             # Tìm tất cả các script tags
             scripts = driver.find_elements(By.TAG_NAME, "script")
@@ -296,7 +377,7 @@ def get_real_download_link(file_id):
                         # Tìm URL trong script
                         url_matches = re.findall(r'(https?://[^"\'\s]+\.(?:zip|psd|ai|jpg|png|pdf|eps|rar)[^"\'\s]*)', script_content)
                         for url in url_matches:
-                            if "pikbest" in url and not any(keyword in url.lower() for keyword in ['logo', 'icon', 'favicon', 'avatar']):
+                            if "pikbest" in url and is_valid_download_file(url):
                                 logger.info(f"Tìm thấy link tải trong JavaScript: {url}")
                                 return url
                 except Exception as e:
@@ -317,8 +398,7 @@ def get_real_download_link(file_id):
                 download_candidates = []
                 for url in all_requests:
                     if isinstance(url, str) and "pikbest" in url:
-                        ext_match = re.search(r'\.(zip|psd|ai|jpg|png|pdf|eps|rar)', url.lower())
-                        if ext_match and not any(keyword in url.lower() for keyword in ['logo', 'icon', 'favicon', 'avatar']):
+                        if is_valid_download_file(url):
                             download_candidates.append(url)
                 
                 if download_candidates:
@@ -363,23 +443,41 @@ def is_valid_download_file(url):
     if not url:
         return False
         
+    # Danh sách các URL cần loại trừ
+    blacklist = [
+        "js.pikbest.com/best/images/personal/designer-prize.png",
+        "pikbest.com/best/images/personal",
+        "pikbest.com/images/",
+        "pikbest.com/static/"
+    ]
+    
+    # Kiểm tra xem URL có trong danh sách đen không
+    for item in blacklist:
+        if item in url:
+            logger.warning(f"URL nằm trong danh sách đen: {url}")
+            return False
+        
     # Kiểm tra phần mở rộng file
     ext_match = re.search(r'\.(zip|psd|ai|jpg|png|pdf|eps|rar)(\?|$)', url.lower())
     if not ext_match:
         return False
         
     # Loại trừ các file logo, icon, v.v.
-    if any(keyword in url.lower() for keyword in ['logo', 'icon', 'favicon', 'avatar']):
+    if any(keyword in url.lower() for keyword in ['logo', 'icon', 'favicon', 'avatar', 'prize', 'personal']):
+        logger.warning(f"URL chứa từ khóa bị loại trừ: {url}")
         return False
         
     # Kiểm tra kích thước file (nếu có thể)
     try:
         response = session.head(url, headers=headers, timeout=5)
         content_length = response.headers.get('Content-Length')
-        if content_length and int(content_length) < 10000:  # Nhỏ hơn 10KB có thể là icon
-            return False
-    except:
-        pass
+        if content_length:
+            size_kb = int(content_length) / 1024
+            if size_kb < 50:  # Nhỏ hơn 50KB có thể là icon hoặc hình ảnh nhỏ
+                logger.warning(f"File quá nhỏ ({size_kb:.2f} KB): {url}")
+                return False
+    except Exception as e:
+        logger.error(f"Lỗi khi kiểm tra kích thước file: {e}")
         
     return True
 
@@ -399,7 +497,7 @@ def get_file_info(url):
         filename = url.split('/')[-1].split('?')[0]
         
         # Lấy thời gian hết hạn từ URL
-        expiry_time = None
+        expiry_time = "Không xác định"
         expiry_match = re.search(r'[?&]e=(\d+)', url)
         if expiry_match:
             try:
@@ -407,8 +505,6 @@ def get_file_info(url):
                 expiry_time = time.strftime('%d/%m/%Y %H:%M:%S', time.localtime(expiry_timestamp))
             except:
                 expiry_time = "Không xác định"
-        else:
-            expiry_time = "Không xác định"
         
         return {
             'filename': filename,
@@ -471,11 +567,15 @@ def process_pikbest_url(user_url):
     logger.info(f"Đang xử lý ID: {file_id} từ URL: {user_url}")
 
     real_url = get_real_download_link(file_id)
-    if real_url:
-        print(f"\n🎯 Link tải thật: {real_url}")
+    
+    # Xác minh link tải
+    verified_url = verify_download_link(real_url) if real_url else None
+    
+    if verified_url:
+        print(f"\n🎯 Link tải thật: {verified_url}")
         
         # Lấy thông tin file
-        file_info = get_file_info(real_url)
+        file_info = get_file_info(verified_url)
         
         # Hiển thị thông tin file
         print("\n📁 Thông tin file:")
@@ -489,12 +589,12 @@ def process_pikbest_url(user_url):
         print("  1. Sao chép link trên và dán vào trình duyệt")
         print("  2. Sử dụng công cụ tải xuống như IDM, wget, curl, v.v.")
         print("  3. Sử dụng lệnh sau trong terminal:")
-        print(f"     curl -o \"{file_info['filename']}\" \"{real_url}\"")
+        print(f"     curl -o \"{file_info['filename']}\" \"{verified_url}\"")
         
         # Hiển thị cảnh báo nếu link sắp hết hạn
         if file_info['expiry'] != "Không xác định":
             try:
-                expiry_match = re.search(r'[?&]e=(\d+)', real_url)
+                expiry_match = re.search(r'[?&]e=(\d+)', verified_url)
                 if expiry_match:
                     expiry_timestamp = int(expiry_match.group(1))
                     current_time = time.time()
@@ -507,10 +607,16 @@ def process_pikbest_url(user_url):
             except:
                 pass
         
-        return real_url
+        return verified_url
     else:
-        logger.error("Không tìm thấy link tải thật")
-        print("⚠️ Không tìm thấy link tải thật. Vui lòng kiểm tra lại URL hoặc đăng nhập.")
+        if real_url:
+            logger.error(f"Tìm thấy link nhưng không hợp lệ: {real_url}")
+            print(f"⚠️ Tìm thấy link nhưng không hợp lệ: {real_url}")
+            print("💡 Mẹo: Link này có thể là hình ảnh hoặc tài nguyên khác, không phải file tải thật.")
+        else:
+            logger.error("Không tìm thấy link tải thật")
+            print("⚠️ Không tìm thấy link tải thật. Vui lòng kiểm tra lại URL hoặc đăng nhập.")
+        
         print("💡 Mẹo: Hãy kiểm tra file debug_screenshot.png và page_source.html để xem trạng thái trang.")
         return None
 
@@ -531,6 +637,46 @@ def process_multiple_urls(urls):
             print(f"{i}. {url}")
     
     return results
+
+def verify_download_link(url):
+    """Xác minh link tải có hợp lệ không và có phải là link tải thật không"""
+    if not url:
+        return None
+        
+    # Kiểm tra tính hợp lệ của URL
+    if not is_valid_download_file(url):
+        logger.warning(f"Link không hợp lệ: {url}")
+        return None
+        
+    # Kiểm tra xem URL có phải là link tải thật không
+    try:
+        # Kiểm tra kích thước file
+        response = session.head(url, headers=headers, timeout=5)
+        content_length = response.headers.get('Content-Length')
+        
+        if content_length:
+            size_mb = int(content_length) / (1024 * 1024)
+            
+            # Nếu file quá nhỏ (< 0.5MB) và không phải là file zip, có thể không phải là file tải thật
+            if size_mb < 0.5 and not url.lower().endswith('.zip'):
+                logger.warning(f"File quá nhỏ ({size_mb:.2f} MB), có thể không phải là file tải thật: {url}")
+                
+                # Kiểm tra thêm nếu là file hình ảnh
+                content_type = response.headers.get('Content-Type', '')
+                if 'image' in content_type:
+                    logger.warning(f"File là hình ảnh, không phải file tải thật: {url}")
+                    return None
+        
+        # Kiểm tra URL có chứa tham số e= (thời gian hết hạn) không
+        # Link tải thật của Pikbest thường có tham số này
+        if 'e=' not in url and '.zip' in url:
+            logger.warning(f"URL không có tham số hết hạn (e=), có thể không phải link tải thật: {url}")
+            # Không trả về None ở đây vì một số link tải có thể không có tham số e=
+        
+        return url
+    except Exception as e:
+        logger.error(f"Lỗi khi xác minh link tải: {e}")
+        return url  # Vẫn trả về URL nếu có lỗi xảy ra khi xác minh
 
 if __name__ == "__main__":
     print("=" * 60)

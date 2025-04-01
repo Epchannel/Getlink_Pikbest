@@ -1,0 +1,51 @@
+{
+  "APIKEY": "",
+  "ACTIVE": true,
+  "THEME": "light",
+  "TITLES": ["POPULARCAPTCHA", "RECAPTCHA2", "AWSWAF", "BLS", "GEETEST","MTCAPTCHA"],
+  "CAPTCHAS": ["POPULARCAPTCHA", "RECAPTCHA2", "AWSWAF", "BLS", "GEETEST","MTCAPTCHA"],
+  "BLACKLIST": ["https://github.com"],
+  "BLACKLISTENABLED": false,
+  "AUTOOPENENABLED": true,
+  "LOGENABLED": true,
+  "Local_lang": "en",
+  "NOTIFICATION": true,
+  "GUIDE_PAGE": true,
+  "OPTIONS": {
+    "POPULARCAPTCHA": {
+      "ENABLED": true,
+      "ALWAYSSOLVE": true,
+      "AUTOOPEN": true,
+      "AUTOSOLVE": true,
+      "ENGLISH": true
+    },
+    "RECAPTCHA2": {
+      "ENABLED": true,
+      "ALWAYSSOLVE": true,
+      "AUTOOPEN": true,
+      "AUTOSOLVE": true,
+      "METHOD": "RECOGNITION"
+    },
+    "AWSWAF": {
+      "ENABLED": true,
+      "AUTOOPEN": true,
+      "AUTOSOLVE": true
+    },
+    "BLS": {
+      "ENABLED": true,
+      "AUTOOPEN": false,
+      "AUTOSOLVE": true
+    },
+    "GEETEST": {
+      "ENABLED": true,
+      "AUTOOPEN": true,
+      "AUTOSOLVE": true,
+      "SOLVETIME":5
+    },
+    "MTCAPTCHA": {
+      "ENABLED": true,
+      "AUTOSOLVE": true,
+      "METHOD": "RECOGNITION"
+    }
+  }
+}
